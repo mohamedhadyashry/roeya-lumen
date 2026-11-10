@@ -2402,10 +2402,10 @@ function isAdmin(){ return !!LIVE.admin; }
 function liveWho(id){ const p=LIVE.profiles[id]; if(!p) return null; return {id,name:p.name||'Member',role:p.role||'',city:p.city||p.country||'',hue:p.hue??hueFor(id),kind:p.kind||'Fellow',mods:p.mods||[],faculty:p.kind==='Expert',verified:!!p.verified,real:true}; }
 function isVerified(){ const p=LIVE.profiles[LIVE.uid]; return isDemo()||!!(p&&p.verified); }
 function myCourses(){ return S.courses||[]; }
-function onSaved(){ if(!LIVE.uid||!S.auth) return; clearTimeout(LIVE.saveT); LIVE.saveT=setTimeout(pushState,1200); }
+function onSaved(){ if(!LIVE.uid||!S.auth||S.demo) return; clearTimeout(LIVE.saveT); LIVE.saveT=setTimeout(pushState,1200); }
 function cloudState(){ const c=Object.assign({},S); delete c.auth; delete c.user; return c; }
 async function pushState(first){
-  if(!LIVE.uid) return; clearTimeout(LIVE.saveT); LIVE.saveT=null;
+  if(!LIVE.uid||S.demo) return; clearTimeout(LIVE.saveT); LIVE.saveT=null;
   const data={stateJson:JSON.stringify(cloudState())};
   if(S.user?.email) data.email=S.user.email; if(S.user?.name) data.name=String(S.user.name).slice(0,120);
   if(first) data.createdAt=new Date();
@@ -2414,17 +2414,28 @@ async function pushState(first){
 window.addEventListener('pagehide',()=>{ if(LIVE.saveT) pushState(); });
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden'&&LIVE.saveT) pushState(); });
 
-function feedPosts(){ return LIVE.posts; }
-function likeCount(p){ return (LIVE.likes[p.id]||[]).length; }
-function isLiked(p){ return (LIVE.likes[p.id]||[]).includes(LIVE.uid); }
-function postComments(p){ return (LIVE.comments[p.id]||[]).map(c=>[c.by,c.text]); }
-function myVote(p){ const v=(LIVE.votes[p.id]||{})[LIVE.uid]; return v==null?undefined:v; }
-function pollCounts(p){ const vs=Object.values(LIVE.votes[p.id]||{}); return p.poll.o.map((o,i)=>vs.filter(x=>x===i).length); }
+/* Starter posts show from data.js while showSamples is on (and always for the demo account).
+   The demo account is shared, so its likes, comments, votes and posts stay in this browser only. */
+const SAMPLE_T0=Date.now();
+function samplePosts(){
+  if(!(isDemo()||LCFG.showSamples)) return [];
+  const have=new Set(LIVE.posts.map(p=>p.id));
+  return POSTS.filter(p=>!have.has(p.id)).map(p=>shapePost({id:p.id,by:p.by,text:p.text,tags:p.tags,link:p.link,art:p.art,sample:!POST_AUTHORS[p.by],at:SAMPLE_T0-(POSTS.indexOf(p)+1)*21600000,poll:p.poll?{q:p.poll.q,o:p.poll.o.map(o=>o[0])}:null}));
+}
+function feedPosts(){ return [...(isDemo()?(S.myPosts||[]):[]),...LIVE.posts,...samplePosts()].sort((a,b)=>(b.ts||0)-(a.ts||0)); }
+const demoBase=id=>isDemo()?POSTS.find(p=>p.id===id):null;
+const notMe=uid=>!isDemo()||uid!==LIVE.uid;
+function likeCount(p){ const b=demoBase(p.id); return (b&&b.likes||0)+(LIVE.likes[p.id]||[]).filter(notMe).length+(isDemo()&&S.likes.includes(p.id)?1:0); }
+function isLiked(p){ return isDemo()?S.likes.includes(p.id):(LIVE.likes[p.id]||[]).includes(LIVE.uid); }
+function postComments(p){ const b=demoBase(p.id); return [...(b&&b.comments||[]),...(LIVE.comments[p.id]||[]).filter(c=>notMe(c.by)).map(c=>[c.by,c.text]),...(isDemo()?(S.cmts[p.id]||[]):[])]; }
+function myVote(p){ if(isDemo()) return S.votes[p.id]; const v=(LIVE.votes[p.id]||{})[LIVE.uid]; return v==null?undefined:v; }
+function pollCounts(p){ const b=demoBase(p.id), m=myVote(p); const vs=Object.entries(LIVE.votes[p.id]||{}).filter(([u])=>notMe(u)).map(([,i])=>i); return p.poll.o.map((o,i)=>(b&&b.poll&&b.poll.o[i]?b.poll.o[i][1]||0:0)+vs.filter(x=>x===i).length+(isDemo()&&m===i?1:0)); }
 function postTime(p){ return ago(new Date(p.ts)); }
-function canDeletePost(p){ return p.by===LIVE.uid; }
+function canDeletePost(p){ return p.by===LIVE.uid||(isDemo()&&p.by==='me'); }
 function qaList(v){
   const live=(LIVE.qa[v.id]||[]).slice().sort((a,b)=>a.at-b.at).map(q=>[q.by,q.text,(liveWho(q.by)||{}).faculty?1:0,ago(new Date(q.at)),q.id]);
-  return [...(isDemo()||LCFG.showSamples?(QA[v.mod]||QA.default||[]):[]),...live];
+  const mine=isDemo()?((S.cmts['v:'+v.id])||[]).map(c=>[c[0],c[1],0,c[2]]):[];
+  return [...(isDemo()||LCFG.showSamples?(QA[v.mod]||QA.default||[]):[]),...live.filter(q=>notMe(q[0])),...mine];
 }
 function networkPeople(){
   const real=Object.keys(LIVE.profiles).filter(id=>id!==LIVE.uid).map(id=>({...liveWho(id),id,mods:LIVE.profiles[id].mods||[]}));
@@ -2459,12 +2470,15 @@ function openConv(id,prefill=''){
 
 /* ---------- auth lifecycle ---------- */
 async function startUser(u){
+  const prev=S;
   LIVE.uid=u.uid;
   const demoAcc=(u.email||'').toLowerCase()===String(LCFG.demoEmail||'test@roeya.com').toLowerCase();
   let doc=null, prof=null;
-  try{ doc=await API.getUser(u.uid); }catch(e){ console.error(e); liveError('Could not load your saved data ('+errCode(e)+').'); }
+  if(!demoAcc) try{ doc=await API.getUser(u.uid); }catch(e){ console.error(e); liveError('Could not load your saved data ('+errCode(e)+').'); }
   try{ prof=await API.getProfile(u.uid); }catch(e){ console.error(e); }
-  let st=null; if(doc&&doc.stateJson){ try{ st=JSON.parse(doc.stateJson); }catch(e){} }
+  let st=null;
+  if(demoAcc){ if(prev&&prev.demo&&prev.auth&&prev.user&&prev.user.uid===u.uid) st={...prev}; }
+  else if(doc&&doc.stateJson){ try{ st=JSON.parse(doc.stateJson); }catch(e){} }
   const keep={theme:S.theme,lang:S.lang};
   S=Object.assign(demoAcc?structuredClone(DEFAULT_STATE):freshState(),st||{});
   if(!st){ S.theme=keep.theme; S.lang=keep.lang; }
@@ -2479,6 +2493,7 @@ async function startUser(u){
   }
   S.auth=true;
   S.user={uid:u.uid,email:u.email||'',name:prof.name||u.name||'Member',first:firstName(prof.name||u.name),role:prof.role||'',city:prof.city||prof.country||'',hue:prof.hue??hueFor(u.uid),mods:prof.mods||[],joined:monthYear(prof.joined)};
+  if(demoAcc&&st&&st.user&&st.user.name){ S.user.name=st.user.name; S.user.first=firstName(st.user.name); }
   if(!doc) await pushState(true);
   if(pend){
     const v=pend.verification||{};
@@ -2504,7 +2519,7 @@ function shapePost(d){ return {id:d.id,by:d.by,text:d.text||'',tags:d.tags||[],l
 function startListeners(){
   stopListeners();
   const onErr=what=>e=>{ console.error(what,e); if(e&&e.code==='permission-denied') liveError(`${what}: permission denied. Check that the Firestore rules are published.`); else if(e&&e.code==='failed-precondition'){ const url=(String(e.message||'').match(/https:\/\/\S+/)||[])[0]; if(url&&isAdmin()) openModal(`${mh('One-time database setup')}<div class="mb"><p class="muted">${esc(what)} needs a database index. Open the link, press Save in Firebase, wait two minutes, then reload.</p></div><div class="mf"><a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener">Create the index</a></div>`); else liveError(`${what} is being set up. Try again in a few minutes.`); } };
-  LIVE.unsub.push(API.watchProfiles(l=>{ LIVE.profiles={}; l.forEach(p=>LIVE.profiles[p.id]=p); const mine=LIVE.profiles[LIVE.uid]; if(mine&&S.user){ Object.assign(S.user,{name:mine.name||S.user.name,first:firstName(mine.name||S.user.name),role:mine.role||'',city:mine.city||mine.country||'',mods:mine.mods||[],joined:monthYear(mine.joined)||S.user.joined}); } changed('profiles'); },onErr('Members')));
+  LIVE.unsub.push(API.watchProfiles(l=>{ LIVE.profiles={}; l.forEach(p=>LIVE.profiles[p.id]=p); const mine=LIVE.profiles[LIVE.uid]; if(mine&&S.user&&!S.demo){ Object.assign(S.user,{name:mine.name||S.user.name,first:firstName(mine.name||S.user.name),role:mine.role||'',city:mine.city||mine.country||'',mods:mine.mods||[],joined:monthYear(mine.joined)||S.user.joined}); } changed('profiles'); },onErr('Members')));
   LIVE.unsub.push(API.watchPosts(l=>{ LIVE.posts=l.map(shapePost).filter(p=>LCFG.showSamples||!p.sample||isDemo()).sort((a,b)=>b.ts-a.ts); changed('posts'); },onErr('Feed')));
   LIVE.unsub.push(API.watchLikes(l=>{ const m={}; l.forEach(x=>{ (m[x.post]=m[x.post]||[]).push(x.uid); }); LIVE.likes=m; changed('likes'); },onErr('Likes')));
   LIVE.unsub.push(API.watchComments(l=>{ const m={}; l.forEach(x=>{ (m[x.post]=m[x.post]||[]).push(x); }); Object.values(m).forEach(a=>a.sort((x,y)=>x.at-y.at)); LIVE.comments=m; changed('comments'); },onErr('Comments')));
@@ -2617,11 +2632,12 @@ FORMS['brief-public']=async({f,val})=>{
   const email=val('email'); if(!/^\S+@\S+\.\S+$/.test(email)){ toast('Enter a valid email address.','info'); f.querySelector('input').classList.add('err'); return; }
   try{ await API.submit('newsletter',{email,topics:[],freq:'weekly',lang:S.lang,source:'home'}); f.reset(); toast('Subscribed. The first issue arrives on Sunday.','mail'); }catch(e){ fail(e,'subscribe'); }
 };
-FORMS.vqa=async({f,val})=>{ const q=val('q'); if(q.length<3) return; try{ await API.askQA(f.dataset.id,q.slice(0,2000)); f.reset(); toast('Question posted. ROEYA routes it to the faculty.','msg'); }catch(e){ fail(e,'post your question'); } };
-FORMS.cmt=async({f,val})=>{ const c=val('c'); if(!c) return; try{ await API.addComment(f.dataset.post,c.slice(0,2000)); f.reset(); }catch(e){ fail(e,'post the comment'); } };
+FORMS.vqa=async(ctx)=>{ if(isDemo()) return _FORMS.vqa(ctx); const {f,val}=ctx; const q=val('q'); if(q.length<3) return; try{ await API.askQA(f.dataset.id,q.slice(0,2000)); f.reset(); toast('Question posted. ROEYA routes it to the faculty.','msg'); }catch(e){ fail(e,'post your question'); } };
+FORMS.cmt=async(ctx)=>{ if(isDemo()) return _FORMS.cmt(ctx); const {f,val}=ctx; const c=val('c'); if(!c) return; try{ await API.addComment(f.dataset.post,c.slice(0,2000)); f.reset(); }catch(e){ fail(e,'post the comment'); } };
 FORMS.post=async({f,val})=>{
   const tx=val('text'); if(tx.length<3){ toast('Write something first.','info'); return; }
   const tag=/^Case:/.test(tx)?'Case':/^Paper:/.test(tx)?'Research':/^Question/.test(tx)?'Question':'Discussion';
+  if(isDemo()){ S.myPosts.unshift({id:'m'+Date.now(),by:'me',ts:Date.now(),tags:[tag],text:tx.slice(0,5000),link:null,art:null,poll:null,sample:false}); save(); FEEDF='All'; f.reset(); refresh(); toast('Posted to the community.','send'); return; }
   btnBusy(f,true,'Posting…');
   try{ await API.createPost({text:tx.slice(0,5000),tags:[tag]}); FEEDF='All'; f.reset(); toast('Posted to the community.','send'); }catch(e){ fail(e,'post'); }
   btnBusy(f,false);
@@ -2674,7 +2690,9 @@ FORMS.passport=async({f,val})=>{
   if(!ok){ const el=$('#pp-err'); el.hidden=false; el.querySelector('span').textContent='That code is not recognised. Check your course confirmation email.'; f.querySelector('input').classList.add('err'); return; }
   closeModal(); toast(`Course Passport ${esc(c.toUpperCase())} activated.${ok.pathway?' The pathway is now in your list.':''}`,'ticket'); refresh();
 };
-FORMS.profile=async({val})=>{
+FORMS.profile=async(ctx)=>{
+  if(isDemo()) return _FORMS.profile(ctx);
+  const {val}=ctx;
   const n=val('name').slice(0,120), bio=val('bio').slice(0,1000);
   try{ await API.updateProfile(LIVE.uid,{name:n||S.user.name,bio}); }catch(e){ return fail(e,'update your profile'); }
   S.user.name=n||S.user.name; S.user.first=firstName(S.user.name); S.bio=bio; save(); closeModal(); refresh(); toast('Profile updated.');
@@ -2703,9 +2721,9 @@ const _ACT={...ACT};
 ACT.logout=async()=>{ try{ await pushState(); await API.signOut(); toast('Signed out.'); }catch(e){ fail(e,'sign out'); } };
 ACT.sso=async()=>{ try{ await API.google(); }catch(e){ if(!/popup-closed-by-user|cancelled-popup-request/.test(e.code||'')) toast(authMsg(e),'alert'); } };
 ACT['fill-demo']=()=>{ $('#em').value=LCFG.demoEmail||'test@roeya.com'; $('#pw').value=LCFG.demoPassword||'roeya2026'; $('#login-err').hidden=true; };
-ACT.like=(el)=>{ const id=el.dataset.post, p=feedPosts().find(x=>x.id===id)||{id}; API.setLike(id,!isLiked(p)).catch(e=>fail(e,'like the post')); };
-ACT.vote=(el)=>{ API.vote(el.dataset.post,+el.dataset.i).catch(e=>fail(e,'vote')); };
-ACT['post-del']=(el)=>{ API.deletePost(el.dataset.post).then(()=>{ closeModal(); toast('Post deleted.'); }).catch(e=>fail(e,'delete the post')); };
+ACT.like=(el)=>{ if(isDemo()) return _ACT.like(el); const id=el.dataset.post, p=feedPosts().find(x=>x.id===id)||{id}; API.setLike(id,!isLiked(p)).catch(e=>fail(e,'like the post')); };
+ACT.vote=(el)=>{ if(isDemo()) return _ACT.vote(el); API.vote(el.dataset.post,+el.dataset.i).catch(e=>fail(e,'vote')); };
+ACT['post-del']=(el)=>{ if(isDemo()&&(S.myPosts||[]).some(p=>p.id===el.dataset.post)) return _ACT['post-del'](el); API.deletePost(el.dataset.post).then(()=>{ closeModal(); toast('Post deleted.'); }).catch(e=>fail(e,'delete the post')); };
 ACT.ask=(el,id)=>{
   if(LIVE.profiles[id]) return openConv(id);
   if(isDemo()) return _ACT.ask(el,id);
@@ -2750,7 +2768,7 @@ R.admin=()=>{
     +tbl(['Code','Course','Pathway','Created','Actions'],(D.codes||[]).map(c=>`<tr><td class="mono">${cell(c.id)}</td><td>${cell(c.course)}</td><td>${cell(PW(c.pathway)?.name||'—')}</td><td>${fmtTs(c.at)}</td><td><button class="btn btn-sm btn-ghost" data-act="adm-del" data-col="codes" data-id="${c.id}">Delete</button></td></tr>`));
   else if(A.tab==='content') body=`<section class="panel" style="display:grid;gap:12px"><h3>Feed posts</h3><p class="muted">${LIVE.posts.length} posts in the feed, ${LIVE.posts.filter(p=>p.sample).length} marked as sample.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" data-act="adm-seed">${ic('plus')}Add the starter posts</button><button class="btn btn-secondary" data-act="adm-unsample">${ic('x')}Remove sample posts</button></div>
-      <p class="hint">Starter posts are the ROEYA news items from the demo (EGH 2026, the ESGE guideline, the ROEYA ePoster, the simulators review) plus sample posts from fictional people, marked “Sample”. Adding them again overwrites them and resets their likes count only if you delete them first. Sample people, sessions and conversations are switched on or off with <code>showSamples</code> in <code>config.js</code>.</p></section>`;
+      <p class="hint">Starter posts are the ROEYA news items from the demo (EGH 2026, the ESGE guideline, the ROEYA ePoster, the simulators review) plus sample posts from fictional people, marked “Sample”. Adding them again overwrites them and resets their likes count only if you delete them first. While <code>showSamples</code> is on in <code>config.js</code>, the starter posts, sample people, sessions and conversations show even before you add them. Turn it off before launch.</p></section>`;
   return shell('',`${pageHead('Admin','Members, verifications, bookings and requests from your Firebase project.',`<button class="btn btn-secondary" data-act="adm-reload">${ic('rew')}Reload</button>`)}
     <div class="chips scroll">${ADM_TABS.map(x=>`<button class="chip${A.tab===x[0]?' on':''}" data-act="adm-tab" data-id="${x[0]}">${x[1]}</button>`).join('')}</div>${body}`);
 };
