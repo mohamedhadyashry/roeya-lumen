@@ -1356,7 +1356,7 @@ function authArt(cap){
 R.login=()=>`<div class="auth">${authArt(`<div class="cap"><p class="eyebrow" style="color:#8FD3F5">Case of the week #46</p><h2 style="margin-top:10px">Papilla on the rim of a diverticulum. Two failed attempts. What next?</h2><p>Sign in to vote, then watch what was done in Monday’s review.</p></div>`)}
   <div class="auth-panel"><form class="auth-card" data-form="login" novalidate>
     <div><h1>Welcome back</h1><p class="muted" style="margin-top:8px">Sign in to continue your pathway.</p></div>
-    <div class="sso"><button type="button" class="btn btn-secondary" data-act="sso">${ic('globe')}Continue with Google</button><button type="button" class="btn btn-secondary" data-act="sso">${ic('grid')}Continue with Microsoft</button></div>
+    <div class="sso${window.LUMEN_LIVE?' one':''}"><button type="button" class="btn btn-secondary" data-act="sso">${ic('globe')}Continue with Google</button>${window.LUMEN_LIVE?'':`<button type="button" class="btn btn-secondary" data-act="sso">${ic('grid')}Continue with Microsoft</button>`}</div>
     <div class="or">OR</div>
     <div class="field"><label for="em">Email</label><input class="input" id="em" name="email" type="email" autocomplete="username" placeholder="you@hospital.org" required></div>
     <div class="field"><label for="pw" style="display:flex;justify-content:space-between">Password <a href="#forgot" style="color:var(--brand-2);font-weight:600">Forgot password?</a></label>

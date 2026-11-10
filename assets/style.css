@@ -187,6 +187,7 @@ p{margin:0}
 .auth-card{width:100%;max-width:420px;display:grid;gap:18px}
 .auth-card h1{font-size:32px}
 .sso{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sso.one{grid-template-columns:minmax(0,1fr)}
 .or{display:flex;align-items:center;gap:12px;color:var(--fg-3);font-size:12px;font-family:var(--f-mono);letter-spacing:.1em}
 .or::before,.or::after{content:"";height:1px;background:var(--line);flex:1}
 .demo-cred{border:1px dashed var(--line-2);border-radius:var(--r-md);padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--surface)}
